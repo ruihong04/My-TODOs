@@ -3,7 +3,7 @@ import os
 from components import ThemedOptionCardPlane
 from icons import IconDictionary
 from PyQt5.Qt import QColor, QPoint
-from PyQt5.QtCore import Qt, pyqtSignal, QCoreApplication, QEvent
+from PyQt5.QtCore import Qt, pyqtSignal, QCoreApplication
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect, QMainWindow, QTextEdit, QSystemTrayIcon, QMenu, QAction
 from PyQt5.QtGui import QIcon, QPixmap, QPainter
 from settings_parser import SettingsParser
@@ -19,7 +19,6 @@ from siui.components.widgets import (
     SiSwitch,
     SiToggleButton,
 )
-from siui.components.slider import SiSliderH
 from siui.core.animation import SiExpAnimation
 from siui.core.color import Color
 from siui.core.globals import NewGlobal, SiGlobal
@@ -170,8 +169,6 @@ class SingleTODOOption(SiDenseHContainer):
         self.addWidget(self.check_box)
         self.addWidget(self.text_label)
 
-        self.move = self.moveTo
-
         # 初始化时自动载入样式表
         self.reloadStyleSheet()
 
@@ -206,6 +203,9 @@ class AppHeaderPanel(SiLabel):
 
         self.background_label = SiLabel(self)
         self.background_label.setFixedStyleSheet("border-radius: 8px")
+
+        # 用于窗口拖动的锚点
+        self._dragging_anchor = QPoint(0, 0)
 
         self.container_h = SiDenseHContainer(self)
         self.container_h.setAlignCenter(True)
@@ -283,6 +283,37 @@ class AppHeaderPanel(SiLabel):
         self.background_label.setStyleSheet("""background-color: {}; border: 1px solid {}""".format(
             SiGlobal.siui.colors["BACKGROUND_COLOR"], SiGlobal.siui.colors["BORDER_COLOR"]))
         self.unfold_button.setStyleSheet("color: {}".format(SiGlobal.siui.colors["TEXT_B"]))
+
+    # ------------------------------------------------------------------
+    #  以下鼠标事件：在标题栏的空白区域拖动时移动窗口。
+    #  交互按钮（退出、设置等）因为事件首先到达它们自身，不会触发这些逻辑。
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        if event.button() == Qt.LeftButton:
+            # 记录拖动锚点（相对于全局坐标）
+            main_window = self.window()
+            if isinstance(main_window, TODOApplication):
+                main_window._is_dragging_window = True
+                self._dragging_anchor = event.globalPos() - main_window.pos()
+                event.accept()
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        if not (event.buttons() & Qt.LeftButton):
+            return
+
+        main_window = self.window()
+        if isinstance(main_window, TODOApplication) and main_window._is_dragging_window:
+            new_pos = event.globalPos() - self._dragging_anchor
+            main_window.moveTo(new_pos.x(), new_pos.y())
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        main_window = self.window()
+        if isinstance(main_window, TODOApplication):
+            main_window._is_dragging_window = False
 
 
 class TODOListPanel(ThemedOptionCardPlane):
@@ -476,19 +507,37 @@ class SettingsPanel(ThemedOptionCardPlane):
         # 窗口透明度
         self.window_opacity = SingleSettingOption(self)
         self.window_opacity.setTitle("窗口透明度", "调整窗口的透明度，范围从50%到100%")
+        # ------------------------------ 改为按钮控制 ------------------------------
+        self.current_opacity = SiGlobal.todo_list.settings_parser.options.get("WINDOW_OPACITY", 95)
+ 
+        # 创建横向容器以单行显示，并保持居中
+        self.opacity_control_bar = SiDenseHContainer(self)
+        self.opacity_control_bar.setSpacing(6)
+        self.opacity_control_bar.setAlignCenter(True)
 
-        self.opacity_slider = SiSliderH(self)
-        self.opacity_slider.setFixedHeight(32)
-        self.opacity_slider.setMinimum(50)
-        self.opacity_slider.setMaximum(100)
-        self.opacity_slider.setSingleStep(1)
-        self.opacity_slider.setValue(SiGlobal.todo_list.settings_parser.options.get("WINDOW_OPACITY", 95))
-        self.opacity_slider.valueChanged.connect(self._onOpacityChanged)
-        
-        # 重写滑条的鼠标事件处理，防止窗口拖拽
-        self._setupSliderMouseEvents()
+        self.opacity_minus_button = SiSimpleButton(self)
+        self.opacity_minus_button.setFixedSize(32, 32)
+        self.opacity_minus_button.attachment().setText("-")
+        self.opacity_minus_button.clicked.connect(lambda: self._changeOpacity(-5))
 
-        self.window_opacity.addWidget(self.opacity_slider)
+        self.opacity_value_label = SiLabel(self)
+        self.opacity_value_label.setFont(SiGlobal.siui.fonts["S_BOLD"])
+        self.opacity_value_label.setText(f"{self.current_opacity}%")
+        self.opacity_value_label.setAlignment(Qt.AlignCenter)
+        self.opacity_value_label.setFixedSize(60, 32)  # 与按钮同高，保证文字垂直居中
+
+        self.opacity_plus_button = SiSimpleButton(self)
+        self.opacity_plus_button.setFixedSize(32, 32)
+        self.opacity_plus_button.attachment().setText("+")
+        self.opacity_plus_button.clicked.connect(lambda: self._changeOpacity(5))
+
+        # 将控件加入横向容器
+        self.opacity_control_bar.addWidget(self.opacity_minus_button)
+        self.opacity_control_bar.addWidget(self.opacity_value_label)
+        self.opacity_control_bar.addWidget(self.opacity_plus_button)
+
+        # 将横向容器加入设置项
+        self.window_opacity.addWidget(self.opacity_control_bar)
         self.window_opacity.addPlaceholder(16)
 
         # 第三方资源
@@ -591,47 +640,34 @@ class SettingsPanel(ThemedOptionCardPlane):
         self.button_donation.setColor(SiGlobal.siui.colors["SIMPLE_BUTTON_BG"])
         self.button_silicon_ui.attachment().setStyleSheet("color: {}".format(SiGlobal.siui.colors["TEXT_E"]))
 
-    def _setupSliderMouseEvents(self):
-        """设置滑条的鼠标事件处理，防止窗口拖拽"""
-        # 保存原始的鼠标事件处理方法
-        original_mouse_press = self.opacity_slider.mousePressEvent
-        original_mouse_move = self.opacity_slider.mouseMoveEvent
-        original_mouse_release = self.opacity_slider.mouseReleaseEvent
-        
-        # 重写鼠标事件处理方法
-        def mousePressEvent(event):
-            original_mouse_press(event)
-            event.accept()  # 阻止事件传播
-            
-        def mouseMoveEvent(event):
-            original_mouse_move(event)
-            event.accept()  # 阻止事件传播
-            
-        def mouseReleaseEvent(event):
-            original_mouse_release(event)
-            event.accept()  # 阻止事件传播
-        
-        # 替换滑条的鼠标事件处理方法
-        self.opacity_slider.mousePressEvent = mousePressEvent
-        self.opacity_slider.mouseMoveEvent = mouseMoveEvent
-        self.opacity_slider.mouseReleaseEvent = mouseReleaseEvent
+        # 更新新的透明度控件样式
+        btn_color = SiGlobal.siui.colors["SIMPLE_BUTTON_BG"]
+        self.opacity_minus_button.setColor(btn_color)
+        self.opacity_plus_button.setColor(btn_color)
+        self.opacity_value_label.setStyleSheet(
+            "color: {}; font-weight: 600;".format(SiGlobal.siui.colors["TEXT_B"]))
 
-    def _onOpacityChanged(self, value):
-        """处理透明度滑条值改变事件"""
-        # 将百分比值转换为0-1之间的透明度值
+    def _changeOpacity(self, diff: int):
+        """通过按钮增减透明度 (diff 可以为 ±5)"""
+        new_value = max(50, min(100, self.current_opacity + diff))
+        if new_value == self.current_opacity:
+            return
+
+        self.current_opacity = new_value
+        self.opacity_value_label.setText(f"{new_value}%")
+        self.opacity_value_label.adjustSize()
+        self._applyOpacity(new_value)
+
+    def _applyOpacity(self, value: int):
+        """真正执行透明度变更并保存设置"""
         opacity = value / 100.0
-        # 设置主窗口透明度
         main_window = SiGlobal.siui.windows.get("MAIN_WINDOW")
         if main_window:
             main_window.setWindowOpacity(opacity)
-        # 保存设置
+
         SiGlobal.todo_list.settings_parser.modify("WINDOW_OPACITY", value)
-
-
-
-    def showEvent(self, a0):
-        super().showEvent(a0)
-        self.setForceUseAnimations(True)
+        # 强制立即写入，可选
+        # SiGlobal.todo_list.settings_parser.write()
 
 
 class SystemTrayIcon(QSystemTrayIcon):
@@ -822,15 +858,13 @@ class TODOApplication(QMainWindow):
         # 窗口周围留白，供阴影使用
         self.padding = 48
         self.anchor = QPoint(self.x(), self.y())
+        # 标记是否正在拖动窗口，仅当在标题栏区域按下鼠标时为 True
+        self._is_dragging_window = False
         self.fixed_position = QPoint(SiGlobal.todo_list.settings_parser.options["FIXED_POSITION_X"],
                                      SiGlobal.todo_list.settings_parser.options["FIXED_POSITION_Y"])
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)  # 设置窗口背景透明
-
-        # 初始化全局变量
-        SiGlobal.todo_list.todo_list_unfold_state = True
-        SiGlobal.todo_list.add_todo_unfold_state = False
 
         # 初始化工具提示窗口
         SiGlobal.siui.windows["TOOL_TIP"] = ToolTipWindow()
@@ -959,9 +993,6 @@ class TODOApplication(QMainWindow):
         super().resizeEvent(a0)
         self.container_v.move(0, self.padding)
 
-    def showEvent(self, a0):
-        super().showEvent(a0)
-
     def _onTODOWindowResized(self, size):
         w, h = size
         self.adjustSize()
@@ -1031,7 +1062,14 @@ class TODOApplication(QMainWindow):
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
         if event.button() == Qt.LeftButton:
-            self.anchor = event.pos()
+            # 仅当点击在标题栏区域（包含顶部留白和头部面板）时，才允许拖动窗口，
+            # 以避免与滑条等可交互控件的拖动冲突。
+            header_bottom = self.padding + self.header_panel.height()
+            if event.pos().y() <= header_bottom:
+                self._is_dragging_window = True
+                self.anchor = event.pos()
+            else:
+                self._is_dragging_window = False
             event.accept()
 
     def mouseMoveEvent(self, event):
@@ -1039,12 +1077,16 @@ class TODOApplication(QMainWindow):
         if not (event.buttons() & Qt.LeftButton):
             return
 
-        new_pos = event.pos() - self.anchor + self.frameGeometry().topLeft()
-        x, y = new_pos.x(), new_pos.y()
-
-        self.moveTo(x, y)
+        # 仅在拖动窗口状态下移动窗口
+        if self._is_dragging_window:
+            new_pos = event.pos() - self.anchor + self.frameGeometry().topLeft()
+            x, y = new_pos.x(), new_pos.y()
+            self.moveTo(x, y)
 
     def mouseReleaseEvent(self, a0):
+        # 结束窗口拖动
+        self._is_dragging_window = False
+
         if SiGlobal.todo_list.position_locked is True:
             self.moveTo(self.fixed_position.x(), self.fixed_position.y())
 
