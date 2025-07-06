@@ -3,8 +3,9 @@ import os
 from components import ThemedOptionCardPlane
 from icons import IconDictionary
 from PyQt5.Qt import QColor, QPoint
-from PyQt5.QtCore import Qt, pyqtSignal, QCoreApplication
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect, QMainWindow, QTextEdit
+from PyQt5.QtCore import Qt, pyqtSignal, QCoreApplication, QEvent
+from PyQt5.QtWidgets import QGraphicsDropShadowEffect, QMainWindow, QTextEdit, QSystemTrayIcon, QMenu, QAction
+from PyQt5.QtGui import QIcon, QPixmap, QPainter
 from settings_parser import SettingsParser
 from todos_parser import TODOParser
 
@@ -18,6 +19,7 @@ from siui.components.widgets import (
     SiSwitch,
     SiToggleButton,
 )
+from siui.components.slider import SiSliderH
 from siui.core.animation import SiExpAnimation
 from siui.core.color import Color
 from siui.core.globals import NewGlobal, SiGlobal
@@ -107,6 +109,11 @@ def load_colors(is_dark=True):
         SiGlobal.siui.colors["TOGGLE_BUTTON_ON_BG"] = Color.transparency(SiGlobal.siui.colors["THEME"], 0.1)
 
     SiGlobal.siui.reloadAllWindowsStyleSheet()
+    
+    # 更新托盘菜单样式
+    main_window = SiGlobal.siui.windows.get("MAIN_WINDOW")
+    if main_window and hasattr(main_window, 'tray_icon'):
+        main_window.tray_icon.refreshTrayMenu()
 
 
 # 加载主题颜色
@@ -224,11 +231,17 @@ class AppHeaderPanel(SiLabel):
         self.add_todo_button.setHint("添加新待办")
         self.add_todo_button.setChecked(False)
 
+        self.exit_button = SiSimpleButton(self)
+        self.exit_button.resize(32, 32)
+        self.exit_button.setHint("退出")
+
         self.container_h.addPlaceholder(16)
         self.container_h.addWidget(self.icon)
         self.container_h.addPlaceholder(4)
         self.container_h.addWidget(self.unfold_button)
 
+        self.container_h.addPlaceholder(16, "right")
+        self.container_h.addWidget(self.exit_button, "right")
         self.container_h.addPlaceholder(16, "right")
         self.container_h.addWidget(self.settings_button, "right")
         self.container_h.addPlaceholder(16, "right")
@@ -257,6 +270,7 @@ class AppHeaderPanel(SiLabel):
         # svg 图标
         self.settings_button.attachment().load(SiGlobal.siui.icons["fi-rr-menu-burger"])
         self.add_todo_button.attachment().load(SiGlobal.siui.icons["fi-rr-apps-add"])
+        self.exit_button.attachment().load(SiGlobal.siui.icons["fi-rr-cross-small"])
         self.icon.load('<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" id="Layer_1" '
                        'data-name="Layer 1" viewBox="0 0 24 24" width="512" height="512"><path d="M0,8v-1C0,4.243,'
                        '2.243,2,5,2h1V1c0-.552,.447-1,1-1s1,.448,1,1v1h8V1c0-.552,.447-1,1-1s1,.448,1,1v1h1c2.757,0,'
@@ -459,6 +473,24 @@ class SettingsPanel(ThemedOptionCardPlane):
         self.fix_position.addWidget(self.button_fix_position)
         self.fix_position.addPlaceholder(16)
 
+        # 窗口透明度
+        self.window_opacity = SingleSettingOption(self)
+        self.window_opacity.setTitle("窗口透明度", "调整窗口的透明度，范围从50%到100%")
+
+        self.opacity_slider = SiSliderH(self)
+        self.opacity_slider.setFixedHeight(32)
+        self.opacity_slider.setMinimum(50)
+        self.opacity_slider.setMaximum(100)
+        self.opacity_slider.setSingleStep(1)
+        self.opacity_slider.setValue(SiGlobal.todo_list.settings_parser.options.get("WINDOW_OPACITY", 95))
+        self.opacity_slider.valueChanged.connect(self._onOpacityChanged)
+        
+        # 重写滑条的鼠标事件处理，防止窗口拖拽
+        self._setupSliderMouseEvents()
+
+        self.window_opacity.addWidget(self.opacity_slider)
+        self.window_opacity.addPlaceholder(16)
+
         # 第三方资源
         self.third_party_res = SingleSettingOption(self)
         self.third_party_res.setTitle("第三方资源", "本项目使用了 FlatIcon 提供的图标")
@@ -540,6 +572,7 @@ class SettingsPanel(ThemedOptionCardPlane):
         self.body().setAdjustWidgetsSize(True)
         self.body().addWidget(self.use_dark_mode)
         self.body().addWidget(self.fix_position)
+        self.body().addWidget(self.window_opacity)
         self.body().addWidget(self.third_party_res)
         self.body().addWidget(self.license)
         self.body().addWidget(self.about)
@@ -558,9 +591,228 @@ class SettingsPanel(ThemedOptionCardPlane):
         self.button_donation.setColor(SiGlobal.siui.colors["SIMPLE_BUTTON_BG"])
         self.button_silicon_ui.attachment().setStyleSheet("color: {}".format(SiGlobal.siui.colors["TEXT_E"]))
 
+    def _setupSliderMouseEvents(self):
+        """设置滑条的鼠标事件处理，防止窗口拖拽"""
+        # 保存原始的鼠标事件处理方法
+        original_mouse_press = self.opacity_slider.mousePressEvent
+        original_mouse_move = self.opacity_slider.mouseMoveEvent
+        original_mouse_release = self.opacity_slider.mouseReleaseEvent
+        
+        # 重写鼠标事件处理方法
+        def mousePressEvent(event):
+            original_mouse_press(event)
+            event.accept()  # 阻止事件传播
+            
+        def mouseMoveEvent(event):
+            original_mouse_move(event)
+            event.accept()  # 阻止事件传播
+            
+        def mouseReleaseEvent(event):
+            original_mouse_release(event)
+            event.accept()  # 阻止事件传播
+        
+        # 替换滑条的鼠标事件处理方法
+        self.opacity_slider.mousePressEvent = mousePressEvent
+        self.opacity_slider.mouseMoveEvent = mouseMoveEvent
+        self.opacity_slider.mouseReleaseEvent = mouseReleaseEvent
+
+    def _onOpacityChanged(self, value):
+        """处理透明度滑条值改变事件"""
+        # 将百分比值转换为0-1之间的透明度值
+        opacity = value / 100.0
+        # 设置主窗口透明度
+        main_window = SiGlobal.siui.windows.get("MAIN_WINDOW")
+        if main_window:
+            main_window.setWindowOpacity(opacity)
+        # 保存设置
+        SiGlobal.todo_list.settings_parser.modify("WINDOW_OPACITY", value)
+
+
+
     def showEvent(self, a0):
         super().showEvent(a0)
         self.setForceUseAnimations(True)
+
+
+class SystemTrayIcon(QSystemTrayIcon):
+    """系统托盘图标类"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        self.parent_window = parent
+        self.createTrayIcon()
+        self.createTrayMenu()
+        
+        # 连接托盘图标的激活信号
+        self.activated.connect(self.onTrayIconActivated)
+        
+        # 监听主题变化
+        self.updateMenuOnThemeChange()
+        
+    def createTrayIcon(self):
+        """创建托盘图标"""
+        # 使用与主窗口左上角相同的SVG日历图标
+        svg_data = '<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" id="Layer_1" ' \
+                   'data-name="Layer 1" viewBox="0 0 24 24" width="512" height="512"><path d="M0,8v-1C0,4.243,' \
+                   '2.243,2,5,2h1V1c0-.552,.447-1,1-1s1,.448,1,1v1h8V1c0-.552,.447-1,1-1s1,.448,1,1v1h1c2.757,0,' \
+                   '5,2.243,5,5v1H0Zm24,2v9c0,2.757-2.243,5-5,5H5c-2.757,0-5-2.243-5-5V10H24Zm-6.168,' \
+                   '3.152c-.384-.397-1.016-.409-1.414-.026l-4.754,4.582c-.376,.376-1.007,' \
+                   '.404-1.439-.026l-2.278-2.117c-.403-.375-1.035-.354-1.413,.052-.376,.404-.353,1.037,.052,' \
+                   '1.413l2.252,2.092c.566,.567,1.32,.879,2.121,.879s1.556-.312,2.108-.866l4.74-4.568c.397-.383,' \
+                   '.409-1.017,.025-1.414Z" fill="{}" /></svg>'.format(SiGlobal.siui.colors["SVG_A"])
+        
+        # 创建32x32的图标
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.transparent)
+        
+        # 使用SVG渲染器渲染图标
+        from PyQt5.QtSvg import QSvgRenderer
+        renderer = QSvgRenderer(svg_data.encode())
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 在中心位置渲染SVG，留出一些边距
+        margin = 4
+        from PyQt5.QtCore import QRectF
+        render_rect = QRectF(pixmap.rect().adjusted(margin, margin, -margin, -margin))
+        renderer.render(painter, render_rect)
+        
+        painter.end()
+        
+        icon = QIcon(pixmap)
+        self.setIcon(icon)
+        
+    def createTrayMenu(self):
+        """创建托盘右键菜单"""
+        self.tray_menu = QMenu()
+        
+        # 设置菜单的现代化样式
+        self.setupMenuStyle()
+        
+        # 显示主窗口
+        self.show_action = QAction("显示主窗口", self)
+        self.show_action.triggered.connect(self.showMainWindow)
+        self.tray_menu.addAction(self.show_action)
+        
+        self.tray_menu.addSeparator()
+        
+        # 打开设置
+        self.settings_action = QAction("打开设置", self)
+        self.settings_action.triggered.connect(self.openSettings)
+        self.tray_menu.addAction(self.settings_action)
+        
+        self.tray_menu.addSeparator()
+        
+        # 退出程序
+        self.exit_action = QAction("退出程序", self)
+        self.exit_action.triggered.connect(self.exitApplication)
+        self.tray_menu.addAction(self.exit_action)
+        
+        self.setContextMenu(self.tray_menu)
+        
+
+    def setupMenuStyle(self):
+        """设置菜单的现代化样式"""
+        # 获取当前主题颜色
+        theme_color = SiGlobal.siui.colors["THEME"]
+        bg_color = SiGlobal.siui.colors["BACKGROUND_COLOR"]
+        border_color = SiGlobal.siui.colors["BORDER_COLOR"]
+        text_color = SiGlobal.siui.colors["TEXT_B"]
+        hover_color = SiGlobal.siui.colors["BUTTON_HOVER"]
+        
+        # 现代化的菜单样式
+        menu_style = f"""
+        QMenu {{
+            background-color: {bg_color};
+            border: 1px solid {border_color};
+            border-radius: 8px;
+            padding: 6px 0px;
+            font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+            font-size: 13px;
+            font-weight: 400;
+            min-width: 140px;
+            max-width: 160px;
+        }}
+        
+        QMenu::item {{
+            background-color: transparent;
+            color: {text_color};
+            padding: 8px 16px;
+            margin: 1px 4px;
+            border-radius: 4px;
+            min-height: 20px;
+            font-weight: 400;
+        }}
+        
+        QMenu::item:selected {{
+            background-color: {hover_color};
+            color: {text_color};
+        }}
+        
+        QMenu::item:pressed {{
+            background-color: {theme_color};
+            color: {bg_color};
+        }}
+        
+        QMenu::separator {{
+            height: 1px;
+            background-color: {border_color};
+            margin: 4px 8px;
+        }}
+        
+        QMenu::item:disabled {{
+            color: #888888;
+            background-color: transparent;
+        }}
+        """
+        
+        self.tray_menu.setStyleSheet(menu_style)
+        
+    def updateMenuOnThemeChange(self):
+        """当主题变化时更新菜单样式"""
+        # 这个方法可以在主题切换时被调用
+        if hasattr(self, 'tray_menu'):
+            self.setupMenuStyle()
+            
+    def refreshTrayMenu(self):
+        """刷新托盘菜单样式"""
+        self.setupMenuStyle()
+        
+        # 更新托盘图标本身
+        self.createTrayIcon()
+        
+    def onTrayIconActivated(self, reason):
+        """处理托盘图标激活事件"""
+        if reason == QSystemTrayIcon.DoubleClick:
+            # 双击托盘图标显示/隐藏主窗口
+            if self.parent_window.isVisible():
+                self.parent_window.hide()
+            else:
+                self.showMainWindow()
+        elif reason == QSystemTrayIcon.Trigger:
+            # 单击托盘图标显示主窗口
+            self.showMainWindow()
+            
+    def showMainWindow(self):
+        """显示主窗口"""
+        if self.parent_window:
+            self.parent_window.show()
+            self.parent_window.raise_()
+            self.parent_window.activateWindow()
+            
+    def openSettings(self):
+        """打开设置面板"""
+        if self.parent_window:
+            self.showMainWindow()
+            # 打开设置面板
+            self.parent_window.header_panel.settings_button.setChecked(True)
+            
+    def exitApplication(self):
+        """退出应用程序"""
+        if self.parent_window:
+            self.parent_window.reallyClose()
 
 
 class TODOApplication(QMainWindow):
@@ -645,6 +897,7 @@ class TODOApplication(QMainWindow):
         self.header_panel.unfold_button.toggled.connect(self._onShowTODOButtonToggled)
         self.header_panel.add_todo_button.toggled.connect(self._onAddTODOButtonToggled)
         self.header_panel.settings_button.toggled.connect(self._onSettingsButtonToggled)
+        self.header_panel.exit_button.clicked.connect(self.reallyClose)
 
         self.settings_panel.resized.connect(self._onTODOWindowResized)
         self.add_todo_panel.resized.connect(self._onTODOWindowResized)
@@ -663,12 +916,35 @@ class TODOApplication(QMainWindow):
 
         self.resize(500, 800)
         self.move(self.fixed_position.x(), self.fixed_position.y())
+        
+        # 设置初始透明度
+        initial_opacity = SiGlobal.todo_list.settings_parser.options.get("WINDOW_OPACITY", 95)
+        self.setWindowOpacity(initial_opacity / 100.0)
+        
         SiGlobal.siui.reloadAllWindowsStyleSheet()
 
         # 读取 todos.ini 添加到待办
         for todo in SiGlobal.todo_list.todos_parser.todos:
             self.todo_list_panel.addTODO(todo)
+            
+        # 创建系统托盘
+        self.setupSystemTray()
 
+    def setupSystemTray(self):
+        """设置系统托盘"""
+        # 检查系统是否支持托盘
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            print("系统托盘不可用")
+            return
+            
+        # 创建系统托盘图标
+        self.tray_icon = SystemTrayIcon(self)
+        
+        # 设置托盘图标工具提示
+        self.tray_icon.setToolTip("My TODOs - 待办事项管理")
+        
+        # 显示托盘图标
+        self.tray_icon.show()
 
     def adjustSize(self):
         h = (self.header_panel.height() + 12 +
@@ -773,8 +1049,24 @@ class TODOApplication(QMainWindow):
             self.moveTo(self.fixed_position.x(), self.fixed_position.y())
 
     def closeEvent(self, a0):
-        super().closeEvent(a0)
-
+        # 如果有系统托盘，隐藏到托盘而不是退出
+        if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+            self.hide()
+            # 显示托盘消息提示
+            self.tray_icon.showMessage(
+                "My TODOs",
+                "应用程序已最小化到系统托盘",
+                QSystemTrayIcon.Information,
+                2000
+            )
+            a0.ignore()
+            return
+            
+        # 如果没有托盘或者是真正的退出，执行正常的关闭流程
+        self.reallyClose()
+        
+    def reallyClose(self):
+        """真正的关闭程序"""
         # 获取当前待办，并写入 todos.ini
         todos = [widget.text_label.text() for widget in self.todo_list_panel.body().widgets_top]
         SiGlobal.todo_list.todos_parser.todos = todos
@@ -784,6 +1076,10 @@ class TODOApplication(QMainWindow):
         SiGlobal.todo_list.settings_parser.modify("FIXED_POSITION_X", self.fixed_position.x())
         SiGlobal.todo_list.settings_parser.modify("FIXED_POSITION_Y", self.fixed_position.y())
         SiGlobal.todo_list.settings_parser.write()
+
+        # 隐藏托盘图标
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.hide()
 
         SiGlobal.siui.windows["TOOL_TIP"].close()
         QCoreApplication.quit()
