@@ -4,7 +4,7 @@ from components import ThemedOptionCardPlane
 from icons import IconDictionary
 from PyQt5.Qt import QColor, QPoint
 from PyQt5.QtCore import Qt, pyqtSignal, QCoreApplication
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect, QMainWindow, QTextEdit, QSystemTrayIcon, QMenu, QAction
+from PyQt5.QtWidgets import QGraphicsDropShadowEffect, QMainWindow, QTextEdit, QSystemTrayIcon, QMenu, QAction, QDesktopWidget
 from PyQt5.QtGui import QIcon, QPixmap, QPainter
 from settings_parser import SettingsParser
 from todos_parser import TODOParser
@@ -204,8 +204,7 @@ class AppHeaderPanel(SiLabel):
         self.background_label = SiLabel(self)
         self.background_label.setFixedStyleSheet("border-radius: 8px")
 
-        # 用于窗口拖动的锚点
-        self._dragging_anchor = QPoint(0, 0)
+
 
         self.container_h = SiDenseHContainer(self)
         self.container_h.setAlignCenter(True)
@@ -284,36 +283,7 @@ class AppHeaderPanel(SiLabel):
             SiGlobal.siui.colors["BACKGROUND_COLOR"], SiGlobal.siui.colors["BORDER_COLOR"]))
         self.unfold_button.setStyleSheet("color: {}".format(SiGlobal.siui.colors["TEXT_B"]))
 
-    # ------------------------------------------------------------------
-    #  以下鼠标事件：在标题栏的空白区域拖动时移动窗口。
-    #  交互按钮（退出、设置等）因为事件首先到达它们自身，不会触发这些逻辑。
-    # ------------------------------------------------------------------
 
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        if event.button() == Qt.LeftButton:
-            # 记录拖动锚点（相对于全局坐标）
-            main_window = self.window()
-            if isinstance(main_window, TODOApplication):
-                main_window._is_dragging_window = True
-                self._dragging_anchor = event.globalPos() - main_window.pos()
-                event.accept()
-
-    def mouseMoveEvent(self, event):
-        super().mouseMoveEvent(event)
-        if not (event.buttons() & Qt.LeftButton):
-            return
-
-        main_window = self.window()
-        if isinstance(main_window, TODOApplication) and main_window._is_dragging_window:
-            new_pos = event.globalPos() - self._dragging_anchor
-            main_window.moveTo(new_pos.x(), new_pos.y())
-
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
-        main_window = self.window()
-        if isinstance(main_window, TODOApplication):
-            main_window._is_dragging_window = False
 
 
 class TODOListPanel(ThemedOptionCardPlane):
@@ -857,9 +827,12 @@ class TODOApplication(QMainWindow):
 
         # 窗口周围留白，供阴影使用
         self.padding = 48
-        self.anchor = QPoint(self.x(), self.y())
-        # 标记是否正在拖动窗口，仅当在标题栏区域按下鼠标时为 True
+        
+        # 窗口拖动相关变量
         self._is_dragging_window = False
+        self._drag_start_pos = QPoint()  # 鼠标按下时的位置
+        self._window_start_pos = QPoint()  # 窗口拖动开始时的位置
+        
         self.fixed_position = QPoint(SiGlobal.todo_list.settings_parser.options["FIXED_POSITION_X"],
                                      SiGlobal.todo_list.settings_parser.options["FIXED_POSITION_Y"])
 
@@ -881,7 +854,8 @@ class TODOApplication(QMainWindow):
 
         # 创建垂直容器
         self.container_v = SiDenseVContainer(self)
-        self.container_v.setFixedWidth(500)
+        # 让内部容器比窗口左右各缩进 self.padding，以便为阴影留出空间
+        self.container_v.setFixedWidth(500 - 2 * self.padding)
         self.container_v.setSpacing(0)
         self.container_v.setShrinking(True)
         self.container_v.setAlignCenter(True)
@@ -942,14 +916,26 @@ class TODOApplication(QMainWindow):
 
         self.todo_list_panel.todoAmountChanged.connect(self._onTODOAmountChanged)
 
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setColor(QColor(0, 0, 0, 80))
-        shadow.setOffset(0, 0)
-        shadow.setBlurRadius(48)
-        self.setGraphicsEffect(shadow)
+        # 创建阴影效果，但要小心处理以避免分层窗口错误
+        try:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setColor(QColor(0, 0, 0, 60))  # 降低透明度避免冲突
+            shadow.setOffset(0, 2)  # 轻微偏移
+            shadow.setBlurRadius(24)  # 减小模糊半径
+            # 仅对内部容器应用阴影，避免阴影区域超出窗口导致 UpdateLayeredWindowIndirect 失败
+            self.container_v.setGraphicsEffect(shadow)
+        except Exception as e:
+            print(f"无法设置阴影效果: {e}")
+            # 如果阴影设置失败，继续运行但不使用阴影
 
         self.resize(500, 800)
-        self.move(self.fixed_position.x(), self.fixed_position.y())
+        
+        # 确保初始位置有效
+        init_x, init_y = self._constrainToScreen(self.fixed_position.x(), self.fixed_position.y())
+        self.move(init_x, init_y)
+        # 如果位置被约束了，更新固定位置
+        if (init_x, init_y) != (self.fixed_position.x(), self.fixed_position.y()):
+            self.fixed_position = QPoint(init_x, init_y)
         
         # 设置初始透明度
         initial_opacity = SiGlobal.todo_list.settings_parser.options.get("WINDOW_OPACITY", 95)
@@ -987,11 +973,25 @@ class TODOApplication(QMainWindow):
              self.todo_list_panel.height() +
              2 * self.padding)
         self.resize(self.width(), h)
+        # 更新内部容器宽度，确保阴影始终有足够留白
+        self.container_v.setFixedWidth(self.width() - 2 * self.padding)
         self.container_v.adjustSize()
 
     def resizeEvent(self, a0):
         super().resizeEvent(a0)
-        self.container_v.move(0, self.padding)
+        # 保持容器在窗口内居中，并为阴影留边距
+        self.container_v.move(self.padding, self.padding)
+        # 根据窗口大小同步调整内部容器宽度
+        self.container_v.setFixedWidth(self.width() - 2 * self.padding)
+        
+        # 窗口大小改变后，检查位置是否仍然有效
+        try:
+            current_pos = self.pos()
+            new_x, new_y = self._constrainToScreen(current_pos.x(), current_pos.y())
+            if (new_x, new_y) != (current_pos.x(), current_pos.y()):
+                self.move(new_x, new_y)
+        except Exception as e:
+            print(f"窗口大小调整后的位置检查失败: {e}")
 
     def _onTODOWindowResized(self, size):
         w, h = size
@@ -1045,9 +1045,53 @@ class TODOApplication(QMainWindow):
         self.add_todo_panel.text_edit.setText("")
         self.header_panel.add_todo_button.setChecked(False)
 
-    def moveTo(self, x, y):
-        self.move_animation.setTarget([x, y])
-        self.move_animation.try_to_start()
+    def _constrainToScreen(self, x, y):
+        """
+        约束窗口位置在屏幕边界内
+        :param x: 目标x坐标
+        :param y: 目标y坐标
+        :return: 约束后的(x, y)坐标
+        """
+        # 获取屏幕几何信息
+        desktop = QDesktopWidget()
+        screen_rect = desktop.availableGeometry()
+        
+        # 计算最小和最大允许位置
+        min_x = screen_rect.left()
+        min_y = screen_rect.top()
+        max_x = screen_rect.right() - self.width()
+        max_y = screen_rect.bottom() - self.height()
+        
+        # 约束坐标
+        constrained_x = max(min_x, min(max_x, x))
+        constrained_y = max(min_y, min(max_y, y))
+        
+        return constrained_x, constrained_y
+
+    def moveTo(self, x, y, use_animation=True):
+        """
+        移动窗口到指定位置
+        :param x: 目标x坐标
+        :param y: 目标y坐标
+        :param use_animation: 是否使用动画，拖动时应该设为False
+        """
+        # 约束位置在屏幕边界内
+        x, y = self._constrainToScreen(x, y)
+        
+        if use_animation and not self._is_dragging_window:
+            self.move_animation.setTarget([x, y])
+            self.move_animation.try_to_start()
+        else:
+            # 直接移动，不使用动画（用于拖动时）
+            try:
+                self.move(x, y)
+            except Exception as e:
+                print(f"窗口移动失败: {e}")
+                # 重试一次，但忽略异常
+                try:
+                    super().move(x, y)
+                except:
+                    pass
 
     def moveEvent(self, a0):
         super().moveEvent(a0)
@@ -1055,19 +1099,34 @@ class TODOApplication(QMainWindow):
         self.move_animation.setCurrent([x, y])
 
     def _onMoveAnimationTicked(self, pos):
-        self.move(int(pos[0]), int(pos[1]))
-        if SiGlobal.todo_list.position_locked is False:
-            self.fixed_position = self.pos()
+        # 仅在非拖动状态下更新位置
+        if not self._is_dragging_window:
+            try:
+                x, y = int(pos[0]), int(pos[1])
+                # 先约束坐标再移动
+                x, y = self._constrainToScreen(x, y)
+                self.move(x, y)
+                if not SiGlobal.todo_list.position_locked:
+                    self.fixed_position = self.pos()
+            except Exception as e:
+                print(f"动画移动失败: {e}")
+                # 停止动画以避免持续错误
+                self.move_animation.stop()
 
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
         if event.button() == Qt.LeftButton:
+            # 检查位置锁定状态
+            if SiGlobal.todo_list.position_locked:
+                return
+                
             # 仅当点击在标题栏区域（包含顶部留白和头部面板）时，才允许拖动窗口，
             # 以避免与滑条等可交互控件的拖动冲突。
             header_bottom = self.padding + self.header_panel.height()
             if event.pos().y() <= header_bottom:
                 self._is_dragging_window = True
-                self.anchor = event.pos()
+                self._drag_start_pos = event.globalPos()  # 记录全局鼠标位置
+                self._window_start_pos = self.pos()  # 记录窗口当前位置
             else:
                 self._is_dragging_window = False
             event.accept()
@@ -1079,16 +1138,25 @@ class TODOApplication(QMainWindow):
 
         # 仅在拖动窗口状态下移动窗口
         if self._is_dragging_window:
-            new_pos = event.pos() - self.anchor + self.frameGeometry().topLeft()
+            # 计算鼠标移动的偏移量
+            mouse_offset = event.globalPos() - self._drag_start_pos
+            # 计算新的窗口位置
+            new_pos = self._window_start_pos + mouse_offset
             x, y = new_pos.x(), new_pos.y()
-            self.moveTo(x, y)
+            # 直接移动窗口，不使用动画
+            self.moveTo(x, y, use_animation=False)
 
     def mouseReleaseEvent(self, a0):
         # 结束窗口拖动
-        self._is_dragging_window = False
-
-        if SiGlobal.todo_list.position_locked is True:
-            self.moveTo(self.fixed_position.x(), self.fixed_position.y())
+        if self._is_dragging_window:
+            self._is_dragging_window = False
+            
+            # 如果位置被锁定，恢复到固定位置
+            if SiGlobal.todo_list.position_locked:
+                self.moveTo(self.fixed_position.x(), self.fixed_position.y(), use_animation=True)
+            else:
+                # 更新固定位置为当前位置
+                self.fixed_position = self.pos()
 
     def closeEvent(self, a0):
         # 如果有系统托盘，隐藏到托盘而不是退出
