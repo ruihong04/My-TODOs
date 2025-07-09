@@ -3,7 +3,7 @@ import os
 from components import ThemedOptionCardPlane
 from icons import IconDictionary
 from PyQt5.Qt import QColor, QPoint
-from PyQt5.QtCore import Qt, pyqtSignal, QCoreApplication
+from PyQt5.QtCore import Qt, pyqtSignal, QCoreApplication, QTimer
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect, QMainWindow, QTextEdit, QSystemTrayIcon, QMenu, QAction, QDesktopWidget
 from PyQt5.QtGui import QIcon, QPixmap, QPainter
 from settings_parser import SettingsParser
@@ -180,9 +180,21 @@ class SingleTODOOption(SiDenseHContainer):
     def _onChecked(self, state):
         if state is True:
             SiGlobal.todo_list.delete_pile.append(self)
+            # 延迟1秒自动刷新
+            QTimer.singleShot(1000, self._delayed_refresh)
         else:
             index = SiGlobal.todo_list.delete_pile.index(self)
             SiGlobal.todo_list.delete_pile.pop(index)
+
+    def _delayed_refresh(self):
+        # 自动清除已完成项
+        parent_panel = self.parent()
+        # 向上查找 TODOListPanel
+        from ui import TODOListPanel  # 局部导入避免循环
+        while parent_panel and not isinstance(parent_panel, TODOListPanel):
+            parent_panel = parent_panel.parent()
+        if parent_panel:
+            parent_panel.clearCompletedTODOs()
 
     def setText(self, text: str):
         self.text_label.setText(text)
@@ -353,6 +365,11 @@ class TODOListPanel(ThemedOptionCardPlane):
         self.adjustSize()
         self.updateTODOAmount()
 
+        # 立即写入 todos.ini
+        todos = [widget.text_label.text() for widget in self.body().widgets_top]
+        SiGlobal.todo_list.todos_parser.todos = todos
+        SiGlobal.todo_list.todos_parser.write()
+
     def adjustSize(self):
         self.body().adjustSize()
         super().adjustSize()
@@ -378,6 +395,14 @@ class TODOListPanel(ThemedOptionCardPlane):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.no_todo_label.resize(event.size().width(), 150)
+
+    def clearCompletedTODOs(self):
+        for obj in list(SiGlobal.todo_list.delete_pile):
+            self.body().removeWidget(obj)
+            obj.close()
+        SiGlobal.todo_list.delete_pile = []
+        self.adjustSize()
+        self.updateTODOAmount()
 
 
 class AddNewTODOPanel(ThemedOptionCardPlane):
@@ -454,7 +479,8 @@ class SettingsPanel(ThemedOptionCardPlane):
         self.button_use_dark_mode.setFixedHeight(32)
         self.button_use_dark_mode.toggled.connect(load_colors)
         self.button_use_dark_mode.toggled.connect(
-            lambda b: SiGlobal.todo_list.settings_parser.modify("USE_DARK_MODE", b))
+            lambda b: (SiGlobal.todo_list.settings_parser.modify("USE_DARK_MODE", b),
+                       SiGlobal.todo_list.settings_parser.write()))
         self.button_use_dark_mode.setChecked(SiGlobal.todo_list.settings_parser.options["USE_DARK_MODE"])
 
         self.use_dark_mode.addWidget(self.button_use_dark_mode)
@@ -468,7 +494,8 @@ class SettingsPanel(ThemedOptionCardPlane):
         self.button_fix_position.setFixedHeight(32)
         self.button_fix_position.toggled.connect(lock_position)
         self.button_fix_position.toggled.connect(
-            lambda b: SiGlobal.todo_list.settings_parser.modify("FIXED_POSITION", b))
+            lambda b: (SiGlobal.todo_list.settings_parser.modify("FIXED_POSITION", b),
+                       SiGlobal.todo_list.settings_parser.write()))
         self.button_fix_position.setChecked(SiGlobal.todo_list.settings_parser.options["FIXED_POSITION"])
 
         self.fix_position.addWidget(self.button_fix_position)
@@ -636,6 +663,7 @@ class SettingsPanel(ThemedOptionCardPlane):
             main_window.setWindowOpacity(opacity)
 
         SiGlobal.todo_list.settings_parser.modify("WINDOW_OPACITY", value)
+        SiGlobal.todo_list.settings_parser.write()
         # 强制立即写入，可选
         # SiGlobal.todo_list.settings_parser.write()
 
@@ -1184,6 +1212,7 @@ class TODOApplication(QMainWindow):
 
         # 写入设置到 options.ini
         SiGlobal.todo_list.settings_parser.modify("FIXED_POSITION_X", self.fixed_position.x())
+        SiGlobal.todo_list.settings_parser.write()
         SiGlobal.todo_list.settings_parser.modify("FIXED_POSITION_Y", self.fixed_position.y())
         SiGlobal.todo_list.settings_parser.write()
 
